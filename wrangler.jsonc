@@ -1,0 +1,8 @@
+{
+  "name": "chatraze",
+  "compatibility_date": "2026-04-10",
+  "main": "artifacts/api-server/dist/index.mjs",
+  "assets": {
+    "directory": "./artifacts/chat-app/dist"
+  }
+}
