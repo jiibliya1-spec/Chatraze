@@ -9,32 +9,64 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
+import { ActivityIndicator, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { ChatModeProvider } from "@/contexts/ChatModeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { I18nProvider } from "@/contexts/I18nContext";
 
-SplashScreen.preventAutoHideAsync();
+if (Platform.OS !== "web") {
+  SplashScreen.preventAutoHideAsync().catch(() => {
+    // Ignore native splash timing errors to avoid blocking first paint.
+  });
+}
+
+// Debug logging
+if (__DEV__) {
+  console.log("🚀 App starting - RootLayout rendering");
+}
 
 const queryClient = new QueryClient();
 
-function RootLayoutNav() {
-  const { session, loading } = useAuth();
+function PlatformKeyboardProvider({ children }: { children: React.ReactNode }) {
+  if (Platform.OS === "web") {
+    return <>{children}</>;
+  }
 
-  if (loading) return null;
+  const { KeyboardProvider } = require("react-native-keyboard-controller") as typeof import("react-native-keyboard-controller");
+  return <KeyboardProvider>{children}</KeyboardProvider>;
+}
+
+function RootLayoutNav() {
+  const { loading } = useAuth();
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
+  }
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="auth/phone" options={{ headerShown: false }} />
-      <Stack.Screen name="auth/otp" options={{ headerShown: false }} />
-      <Stack.Screen name="chats/index" options={{ headerShown: false }} />
-      <Stack.Screen name="chat/[id]" options={{ headerShown: false }} />
-      <Stack.Screen name="new-chat" options={{ headerShown: false }} />
-      <Stack.Screen name="profile" options={{ headerShown: false }} />
+      <Stack.Screen name="index" />
+      <Stack.Screen name="auth/email" />
+      <Stack.Screen name="auth/phone" />
+      <Stack.Screen name="auth/otp" />
+      <Stack.Screen name="chats/index" />
+      <Stack.Screen name="chat/[id]" />
+      <Stack.Screen name="new-chat" />
+      <Stack.Screen name="profile" />
+      <Stack.Screen name="user/[id]" />
+      <Stack.Screen name="settings/notifications" />
+      <Stack.Screen name="settings/privacy" />
+      <Stack.Screen name="contacts" />
+      <Stack.Screen name="call/[id]" />
     </Stack>
   );
 }
@@ -48,8 +80,10 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    if (fontsLoaded || fontError) {
-      SplashScreen.hideAsync();
+    if ((fontsLoaded || fontError) && Platform.OS !== "web") {
+      SplashScreen.hideAsync().catch(() => {
+        // Ignore native splash timing errors to avoid blocking render.
+      });
     }
   }, [fontsLoaded, fontError]);
 
@@ -58,17 +92,21 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ThemeProvider>
-        <ErrorBoundary>
-          <QueryClientProvider client={queryClient}>
-            <GestureHandlerRootView style={{ flex: 1 }}>
-              <KeyboardProvider>
-                <AuthProvider>
-                  <RootLayoutNav />
-                </AuthProvider>
-              </KeyboardProvider>
-            </GestureHandlerRootView>
-          </QueryClientProvider>
-        </ErrorBoundary>
+        <I18nProvider>
+          <ChatModeProvider>
+            <ErrorBoundary>
+              <QueryClientProvider client={queryClient}>
+                <GestureHandlerRootView style={{ flex: 1 }}>
+                  <PlatformKeyboardProvider>
+                    <AuthProvider>
+                      <RootLayoutNav />
+                    </AuthProvider>
+                  </PlatformKeyboardProvider>
+                </GestureHandlerRootView>
+              </QueryClientProvider>
+            </ErrorBoundary>
+          </ChatModeProvider>
+        </I18nProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

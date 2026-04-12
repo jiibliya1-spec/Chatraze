@@ -23,6 +23,14 @@ export default function OtpScreen() {
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<TextInput>(null);
 
+  const goBackOrEmail = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace("/auth/email");
+  };
+
   const handleVerify = async () => {
     if (code.length < 4) {
       setError("Enter the full verification code");
@@ -46,7 +54,7 @@ export default function OtpScreen() {
         { backgroundColor: colors.background, paddingTop: insets.top + 20 },
       ]}
     >
-      <Pressable onPress={() => router.back()} style={styles.back}>
+      <Pressable onPress={goBackOrEmail} style={styles.back}>
         <Ionicons name="arrow-back" size={24} color={colors.foreground} />
       </Pressable>
 

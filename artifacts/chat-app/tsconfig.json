@@ -1,8 +1,8 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "baseUrl": ".",
     "strict": true,
+    "rootDir": ".",
     "paths": {
       "@/*": [
         "./*"
@@ -10,14 +10,24 @@
     }
   },
   "include": [
-    "**/*.ts",
-    "**/*.tsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "constants/**/*.ts",
+    "contexts/**/*.ts",
+    "contexts/**/*.tsx",
+    "hooks/**/*.ts",
+    "hooks/**/*.tsx",
+    "lib/**/*.ts",
+    "types/**/*.ts",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
   ],
-  "references": [
-    {
-      "path": "../../lib/api-client-react"
-    }
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    ".replit-artifact"
   ]
 }

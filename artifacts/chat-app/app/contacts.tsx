@@ -19,7 +19,7 @@ import { useColors } from "@/hooks/useColors";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types";
 
-export default function NewChatScreen() {
+export default function ContactsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -27,9 +27,12 @@ export default function NewChatScreen() {
   const [search, setSearch] = useState("");
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
-  const [creating, setCreating] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
+  const [addingContactId, setAddingContactId] = useState<string | null>(null);
+  const [contactIds, setContactIds] = useState<Set<string>>(new Set());
 
   const topPad = Platform.OS === "web" ? 0 : insets.top;
+  const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
 
   const goBackOrChats = () => {
     if (router.canGoBack()) {
@@ -56,9 +59,37 @@ export default function NewChatScreen() {
     return () => clearTimeout(timer);
   }, [search, user?.id]);
 
-  const openChat = async (otherUserId: string) => {
+  useEffect(() => {
+    const loadContacts = async () => {
+      if (!user?.id) return;
+      const { data } = await supabase
+        .from("contacts")
+        .select("contact_id")
+        .eq("user_id", user.id);
+      setContactIds(new Set((data ?? []).map((row) => row.contact_id)));
+    };
+
+    loadContacts();
+  }, [user?.id]);
+
+  const addContact = async (contactId: string) => {
+    if (!user?.id || contactId === user.id) return;
+    setAddingContactId(contactId);
+    try {
+      const { error } = await supabase
+        .from("contacts")
+        .upsert({ user_id: user.id, contact_id: contactId }, { onConflict: "user_id,contact_id" });
+      if (error) throw error;
+
+      setContactIds((prev) => new Set([...prev, contactId]));
+    } finally {
+      setAddingContactId(null);
+    }
+  };
+
+  const startChat = async (otherUserId: string) => {
     if (!user) return;
-    setCreating(otherUserId);
+    setStarting(otherUserId);
     const { data: existing } = await supabase.from("chat_participants").select("chat_id").eq("user_id", user.id);
     const { data: otherParticipants } = await supabase.from("chat_participants").select("chat_id").eq("user_id", otherUserId);
     const myChats = new Set((existing ?? []).map((p: any) => p.chat_id));
@@ -75,7 +106,7 @@ export default function NewChatScreen() {
       ]);
       router.replace(`/chat/${newChat.id}`);
     }
-    setCreating(null);
+    setStarting(null);
   };
 
   return (
@@ -84,9 +115,10 @@ export default function NewChatScreen() {
         <Pressable onPress={goBackOrChats} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="white" />
         </Pressable>
-        <Text style={styles.headerTitle}>{t("newChat")}</Text>
+        <Text style={styles.headerTitle}>{t("contacts")}</Text>
       </View>
 
+      {/* Search bar */}
       <View style={[styles.searchWrap, { backgroundColor: colors.background }]}>
         <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <Ionicons name="search" size={16} color={colors.mutedForeground} />
@@ -117,24 +149,37 @@ export default function NewChatScreen() {
         <FlatList
           data={users}
           keyExtractor={(item) => item.id}
+          contentContainerStyle={{ paddingBottom: bottomPad + 20 }}
           renderItem={({ item }) => (
-            <Pressable
-              style={({ pressed }) => [styles.userRow, { backgroundColor: pressed ? colors.muted : colors.background, borderBottomColor: colors.separator }]}
-              onPress={() => openChat(item.id)}
-            >
+            <View style={[styles.userRow, { backgroundColor: colors.background, borderBottomColor: colors.separator }]}>
               <Avatar uri={item.avatar_url} name={item.display_name || item.phone} size={52} showOnline isOnline={item.is_online} />
               <View style={styles.userInfo}>
                 <Text style={[styles.userName, { color: colors.foreground }]}>{item.display_name || item.phone}</Text>
                 <Text style={[styles.userSub, { color: colors.mutedForeground }]} numberOfLines={1}>
-                  {item.about || item.phone || ""}
+                  {item.is_online ? t("online") : item.about || item.phone || item.email || ""}
                 </Text>
               </View>
-              {creating === item.id ? (
+              {addingContactId === item.id ? (
                 <ActivityIndicator color={colors.primary} size="small" />
+              ) : contactIds.has(item.id) ? (
+                <View style={[styles.addedBadge, { borderColor: colors.separator }]}> 
+                  <Text style={[styles.addedText, { color: colors.mutedForeground }]}>Added</Text>
+                </View>
               ) : (
-                <Ionicons name="chevron-forward" size={20} color={colors.mutedForeground} />
+                <Pressable
+                  style={[styles.addBtn, { backgroundColor: colors.primary }]}
+                  onPress={() => addContact(item.id)}
+                >
+                  <Ionicons name="person-add" size={16} color="white" />
+                </Pressable>
               )}
-            </Pressable>
+              <Pressable style={[styles.chatBtn, { backgroundColor: colors.card }]} onPress={() => startChat(item.id)}>
+                {starting === item.id
+                  ? <ActivityIndicator color={colors.primary} size="small" />
+                  : <Ionicons name="chatbubble-outline" size={16} color={colors.primary} />
+                }
+              </Pressable>
+            </View>
           )}
         />
       )}
@@ -152,8 +197,12 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 15 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
   emptyText: { fontSize: 16 },
-  userRow: { flexDirection: "row", alignItems: "center", paddingLeft: 16, paddingRight: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  userRow: { flexDirection: "row", alignItems: "center", paddingLeft: 16, paddingRight: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
   userInfo: { flex: 1, marginLeft: 12 },
   userName: { fontSize: 16, fontWeight: "600" },
   userSub: { fontSize: 13, marginTop: 2 },
+  addBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
+  chatBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: StyleSheet.hairlineWidth },
+  addedBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth },
+  addedText: { fontSize: 12, fontWeight: "600" },
 });

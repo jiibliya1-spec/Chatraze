@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
 import React, {
   useCallback,
@@ -9,98 +10,130 @@ import React, {
 import {
   ActivityIndicator,
   FlatList,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "@/components/Avatar";
 import { MessageBubble } from "@/components/MessageBubble";
 import { TypingIndicator } from "@/components/TypingIndicator";
 import { useAuth } from "@/contexts/AuthContext";
+import { useChatMode } from "@/contexts/ChatModeContext";
+import { useI18n } from "@/contexts/I18nContext";
 import { useColors } from "@/hooks/useColors";
 import { supabase } from "@/lib/supabase";
-import { Message, User } from "@/types";
+import { Message, MessageReaction, User } from "@/types";
+
+const REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "😢", "🙏"];
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuth();
+  const {
+    isDemoMode,
+    demoProfile,
+    typingByChat,
+    getDemoMessages,
+    getDemoUser,
+    sendDemoImage,
+    sendDemoText,
+    sendDemoVoice,
+    reactToDemoMessage,
+    deleteDemoMessage,
+  } = useChatMode();
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  const { t } = useI18n();
   const [messages, setMessages] = useState<Message[]>([]);
   const [otherUser, setOtherUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [actionMsg, setActionMsg] = useState<Message | null>(null);
+  const [showActions, setShowActions] = useState(false);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<TextInput>(null);
-
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
+  const topPad = Platform.OS === "web" ? 0 : insets.top;
 
   const fetchData = useCallback(async () => {
-    if (!user || !id) return;
+    if (isDemoMode && id) {
+      setMessages(getDemoMessages(id));
+      const chatMeta = getDemoMessages(id)[0];
+      const otherUserId = chatMeta?.sender_id === demoProfile.id ? undefined : chatMeta?.sender_id;
+      const guessedOther = otherUserId ? getDemoUser(otherUserId) : undefined;
+      if (!guessedOther) {
+        const firstForeign = getDemoMessages(id).find((message) => message.sender_id !== demoProfile.id);
+        setOtherUser(firstForeign ? getDemoUser(firstForeign.sender_id) ?? null : null);
+      } else {
+        setOtherUser(guessedOther ?? null);
+      }
+      setLoading(false);
+      return;
+    }
 
+    if (!user || !id) return;
     const { data: participants } = await supabase
       .from("chat_participants")
       .select("*, user:users(*)")
       .eq("chat_id", id);
-
-    const other = participants?.find((p) => p.user_id !== user.id);
+    const other = participants?.find((p: any) => p.user_id !== user.id);
     if (other?.user) setOtherUser(other.user as User);
-
     const { data: msgsData } = await supabase
       .from("messages")
-      .select("*")
+      .select("*, reactions:message_reactions(*)")
       .eq("chat_id", id)
       .order("created_at", { ascending: false });
-
     if (msgsData) setMessages(msgsData as Message[]);
-
     await supabase
       .from("messages")
       .update({ status: "read" })
       .eq("chat_id", id)
       .neq("sender_id", user.id)
       .neq("status", "read");
-
     setLoading(false);
-  }, [user, id]);
+  }, [demoProfile.id, getDemoMessages, getDemoUser, id, isDemoMode, user]);
 
   useEffect(() => {
     fetchData();
 
+    if (isDemoMode) {
+      return;
+    }
+
     const msgChannel = supabase
-      .channel(`chat-messages-${id}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${id}` },
+      .channel(`chat-msgs-${id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${id}` },
         async (payload) => {
-          const newMsg = payload.new as Message;
+          const newMsg = { ...(payload.new as Message), reactions: [] };
           setMessages((prev) => [newMsg, ...prev]);
           if (newMsg.sender_id !== user?.id) {
-            await supabase
-              .from("messages")
-              .update({ status: "read" })
-              .eq("id", newMsg.id);
+            await supabase.from("messages").update({ status: "read" }).eq("id", newMsg.id);
           }
         }
       )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "messages", filter: `chat_id=eq.${id}` },
-        (payload) => {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === payload.new.id ? (payload.new as Message) : m))
-          );
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages", filter: `chat_id=eq.${id}` },
+        async (payload) => {
+          const { data: updated } = await supabase
+            .from("messages")
+            .select("*, reactions:message_reactions(*)")
+            .eq("id", payload.new.id)
+            .single();
+          if (updated) setMessages((prev) => prev.map((m) => (m.id === updated.id ? (updated as Message) : m)));
         }
       )
+      .on("postgres_changes", { event: "*", schema: "public", table: "message_reactions" }, () => fetchData())
       .subscribe();
-
     const typingChannel = supabase
       .channel(`typing-${id}`)
       .on("broadcast", { event: "typing" }, (payload) => {
@@ -111,243 +144,313 @@ export default function ChatScreen() {
         }
       })
       .subscribe();
-
     return () => {
       supabase.removeChannel(msgChannel);
       supabase.removeChannel(typingChannel);
     };
-  }, [fetchData, id, user?.id]);
+  }, [fetchData, id, isDemoMode, user?.id]);
 
   const broadcastTyping = useCallback(async () => {
-    await supabase.channel(`typing-${id}`).send({
-      type: "broadcast",
-      event: "typing",
-      payload: { user_id: user?.id },
-    });
-  }, [id, user?.id]);
-
-  const handleTextChange = (val: string) => {
-    setText(val);
-    broadcastTyping();
-  };
+    if (isDemoMode) {
+      return;
+    }
+    await supabase.channel(`typing-${id}`).send({ type: "broadcast", event: "typing", payload: { user_id: user?.id } });
+  }, [id, isDemoMode, user?.id]);
 
   const handleSend = async () => {
     const content = text.trim();
-    if (!content || sending || !user || !id) return;
+    if (!content || sending || !id) return;
     setText("");
     setSending(true);
-
-    await supabase.from("messages").insert({
-      chat_id: id,
-      sender_id: user.id,
-      content,
-      type: "text",
-      status: "sent",
-    });
-
+    const replyId = replyTo?.id ?? null;
+    const replyMessage = replyTo;
+    setReplyTo(null);
+    if (isDemoMode) {
+      await sendDemoText(id, content, replyMessage);
+    } else if (user) {
+      await supabase.from("messages").insert({
+        chat_id: id, sender_id: user.id, content, type: "text", status: "sent", reply_to_id: replyId,
+      });
+    }
     setSending(false);
     inputRef.current?.focus();
   };
 
-  const handleDelete = async (messageId: string) => {
-    await supabase.from("messages").delete().eq("id", messageId);
-    setMessages((prev) => prev.filter((m) => m.id !== messageId));
+  const handlePickImage = async () => {
+    if (!id) return;
+    if (Platform.OS === "web") {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = async (e: Event) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+        setUploading(true);
+        try {
+          const previewUrl = URL.createObjectURL(file);
+          if (isDemoMode) {
+            await sendDemoImage(id, previewUrl, replyTo);
+            setReplyTo(null);
+            return;
+          }
+          if (!user) return;
+          const ext = file.name.split(".").pop() ?? "jpg";
+          const path = `${user.id}/${Date.now()}.${ext}`;
+          await supabase.storage.from("chat-media").upload(path, file, { contentType: file.type });
+          const { data: urlData } = supabase.storage.from("chat-media").getPublicUrl(path);
+          await supabase.from("messages").insert({ chat_id: id, sender_id: user.id, content: urlData.publicUrl, type: "image", status: "sent" });
+        } catch (err) { console.warn("upload error", err); }
+        finally { setUploading(false); }
+      };
+      input.click();
+      return;
+    }
+    if (!isDemoMode && !user) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") return;
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.8 });
+    if (result.canceled || !result.assets[0]) return;
+    setUploading(true);
+    try {
+      const asset = result.assets[0];
+      if (isDemoMode) {
+        await sendDemoImage(id, asset.uri, replyTo);
+        setReplyTo(null);
+        return;
+      }
+      if (!user) return;
+      const ext = asset.uri.split(".").pop() ?? "jpg";
+      const path = `${user.id}/${Date.now()}.${ext}`;
+      const response = await fetch(asset.uri);
+      const blob = await response.blob();
+      await supabase.storage.from("chat-media").upload(path, blob, { contentType: `image/${ext}` });
+      const { data: urlData } = supabase.storage.from("chat-media").getPublicUrl(path);
+      await supabase.from("messages").insert({ chat_id: id, sender_id: user.id, content: urlData.publicUrl, type: "image", status: "sent" });
+    } catch (err) { console.warn("upload error", err); }
+    finally { setUploading(false); }
   };
 
-  const isOnline = otherUser?.is_online ?? false;
-  const lastSeen = otherUser?.last_seen
-    ? `Last seen ${new Date(otherUser.last_seen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-    : "";
+  const handleReact = async (messageId: string, emoji: string) => {
+    if (!user && !isDemoMode) return;
+    setShowActions(false);
+    setActionMsg(null);
+    if (isDemoMode && id) {
+      await reactToDemoMessage(id, messageId, emoji);
+      return;
+    }
+    if (!user) return;
+    const msg = messages.find((m) => m.id === messageId);
+    const existing = msg?.reactions?.find((r: MessageReaction) => r.user_id === user.id && r.emoji === emoji);
+    if (existing) {
+      await supabase.from("message_reactions").delete().eq("message_id", messageId).eq("user_id", user.id);
+    } else {
+      await supabase.from("message_reactions").upsert({ message_id: messageId, user_id: user.id, emoji }, { onConflict: "message_id,user_id" });
+    }
+  };
 
-  const topPad = Platform.OS === "web" ? 67 : insets.top;
+  const handleDelete = async (messageId: string) => {
+    if (isDemoMode && id) {
+      await deleteDemoMessage(id, messageId);
+      setActionMsg(null);
+      setShowActions(false);
+      return;
+    }
+    await supabase.from("messages").update({ is_deleted: true, content: "" }).eq("id", messageId);
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, is_deleted: true, content: "" } : m)));
+    setActionMsg(null);
+    setShowActions(false);
+  };
+
+  const handleLongPress = (message: Message) => {
+    setActionMsg(message);
+    setShowActions(true);
+  };
+
+  const activeUser = isDemoMode ? demoProfile : user;
+  const isOnline = otherUser?.is_online ?? false;
+  const lastSeenStr = otherUser?.last_seen
+    ? `${t("lastSeen")} ${new Date(otherUser.last_seen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : "";
+  const canSend = text.trim().length > 0 && !sending;
+
+  const goBackOrChats = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace("/chats");
+  };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.card }]}>
-      <View style={[styles.header, { backgroundColor: colors.headerBg, paddingTop: topPad }]}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { backgroundColor: colors.headerBg, paddingTop: topPad + 8 }]}>
+        <Pressable onPress={goBackOrChats} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="white" />
         </Pressable>
-        <Avatar
-          uri={otherUser?.avatar_url}
-          name={otherUser?.display_name || otherUser?.phone}
-          size={38}
-          showOnline
-          isOnline={isOnline}
-        />
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerName} numberOfLines={1}>
-            {otherUser?.display_name || otherUser?.phone || "Chat"}
-          </Text>
-          <Text style={styles.headerStatus}>
-            {isOnline ? "Online" : lastSeen}
-          </Text>
+        <View style={styles.headerCenter}>
+          <Pressable onPress={() => otherUser?.id && router.push({ pathname: "/user/[id]", params: { id: otherUser.id } })}>
+            <Avatar uri={otherUser?.avatar_url} name={otherUser?.display_name || otherUser?.phone} size={38} showOnline isOnline={isOnline} />
+          </Pressable>
+          <View style={styles.headerInfo}>
+            <Text style={styles.headerName} numberOfLines={1}>{otherUser?.display_name || otherUser?.phone || t("chats")}</Text>
+            <Text style={styles.headerStatus}>{(isDemoMode ? typingByChat[id ?? ""] : isTyping) ? t("typing") : isOnline ? t("online") : lastSeenStr}</Text>
+          </View>
         </View>
         <View style={styles.headerActions}>
-          <Pressable style={styles.headerBtn}>
-            <Ionicons name="videocam-outline" size={24} color="white" />
+          <Pressable style={styles.headerBtn} onPress={() => router.push(`/call/${id}?type=video&calleeId=${otherUser?.id ?? ""}`)}>
+            <Ionicons name="videocam-outline" size={23} color="white" />
+          </Pressable>
+          <Pressable style={styles.headerBtn} onPress={() => router.push(`/call/${id}?type=audio&calleeId=${otherUser?.id ?? ""}`)}>
+            <Ionicons name="call-outline" size={23} color="white" />
           </Pressable>
           <Pressable style={styles.headerBtn}>
-            <Ionicons name="call-outline" size={24} color="white" />
+            <Ionicons name="ellipsis-vertical" size={21} color="white" />
           </Pressable>
         </View>
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
         {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={colors.primary} />
-          </View>
+          <View style={styles.center}><ActivityIndicator color={colors.primary} size="large" /></View>
         ) : (
-          <FlatList
-            data={messages}
-            keyExtractor={(item) => item.id}
-            inverted
-            keyboardDismissMode="interactive"
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => (
-              <LongPressMessage
-                message={item}
-                isSent={item.sender_id === user?.id}
-                onDelete={handleDelete}
-                colors={colors}
-              />
-            )}
-            ListHeaderComponent={isTyping ? <TypingIndicator /> : null}
-            contentContainerStyle={styles.messagesList}
-            showsVerticalScrollIndicator={false}
-          />
-        )}
-
-        <View style={[styles.inputRow, { backgroundColor: colors.background, paddingBottom: bottomPad + 8 }]}>
-          <View style={[styles.inputWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <TextInput
-              ref={inputRef}
-              style={[styles.input, { color: colors.foreground }]}
-              placeholder="Message"
-              placeholderTextColor={colors.mutedForeground}
-              value={text}
-              onChangeText={handleTextChange}
-              multiline
-              maxLength={2000}
+          <>
+            <FlatList
+              data={messages}
+              keyExtractor={(item) => item.id}
+              inverted
+              keyboardDismissMode="interactive"
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <Pressable onLongPress={() => handleLongPress(item)} delayLongPress={350}>
+                  <MessageBubble message={item} isSent={item.sender_id === activeUser?.id} onReact={handleReact} onReply={setReplyTo} />
+                </Pressable>
+              )}
+              ListHeaderComponent={isTyping ? <TypingIndicator /> : null}
+              contentContainerStyle={styles.messagesList}
+              showsVerticalScrollIndicator={false}
             />
-          </View>
-          <Pressable
-            onPress={handleSend}
-            disabled={!text.trim() || sending}
-            style={[
-              styles.sendBtn,
-              { backgroundColor: text.trim() ? colors.primary : colors.muted },
-            ]}
-          >
-            {sending ? (
-              <ActivityIndicator color="white" size="small" />
-            ) : (
-              <Ionicons
-                name="send"
-                size={20}
-                color={text.trim() ? "white" : colors.mutedForeground}
-              />
+
+            {replyTo && (
+              <View style={[styles.replyBanner, { backgroundColor: colors.card, borderLeftColor: colors.primary }]}>
+                <View style={styles.replyContent}>
+                  <Text style={[styles.replyName, { color: colors.primary }]}>{replyTo.sender?.display_name ?? t("reply")}</Text>
+                  <Text style={[styles.replyText, { color: colors.mutedForeground }]} numberOfLines={1}>
+                    {replyTo.type === "image" ? `📷 ${t("photo")}` : replyTo.content}
+                  </Text>
+                </View>
+                <Pressable onPress={() => setReplyTo(null)} style={styles.replyClose}>
+                  <Ionicons name="close" size={20} color={colors.mutedForeground} />
+                </Pressable>
+              </View>
             )}
-          </Pressable>
-        </View>
+
+            <View style={[styles.inputRow, { borderTopColor: colors.separator, paddingBottom: bottomPad + 8, backgroundColor: colors.background }]}>
+              <Pressable onPress={handlePickImage} disabled={uploading} style={[styles.circleBtn, { backgroundColor: colors.card }]}>
+                {uploading
+                  ? <ActivityIndicator size="small" color={colors.primary} />
+                  : <Ionicons name="attach" size={22} color={colors.mutedForeground} />
+                }
+              </Pressable>
+              <View style={[styles.inputWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <TextInput
+                  ref={inputRef}
+                  style={[styles.input, { color: colors.foreground }]}
+                  placeholder={t("message")}
+                  placeholderTextColor={colors.mutedForeground}
+                  value={text}
+                  onChangeText={(v) => { setText(v); broadcastTyping(); }}
+                  multiline
+                  maxLength={4000}
+                />
+                <Pressable onPress={handlePickImage} style={styles.cameraBtn}>
+                  <Ionicons name="camera-outline" size={21} color={colors.mutedForeground} />
+                </Pressable>
+              </View>
+              <Pressable
+                onPress={canSend ? handleSend : undefined}
+                style={[styles.sendBtn, { backgroundColor: canSend ? colors.primary : colors.card }]}
+              >
+                {sending ? <ActivityIndicator color="white" size="small" />
+                  : canSend ? <Ionicons name="send" size={20} color="white" />
+                  : <Pressable onPress={() => id && sendDemoVoice(id)}><Ionicons name="mic-outline" size={22} color={colors.mutedForeground} /></Pressable>
+                }
+              </Pressable>
+            </View>
+          </>
+        )}
       </KeyboardAvoidingView>
-    </View>
-  );
-}
 
-interface LongPressMessageProps {
-  message: Message;
-  isSent: boolean;
-  onDelete: (id: string) => void;
-  colors: ReturnType<typeof useColors>;
-}
-
-function LongPressMessage({ message, isSent, onDelete, colors }: LongPressMessageProps) {
-  const [showActions, setShowActions] = useState(false);
-
-  return (
-    <Pressable
-      onLongPress={() => isSent && setShowActions(true)}
-      delayLongPress={400}
-    >
-      <MessageBubble message={message} isSent={isSent} />
-      {showActions && (
-        <Pressable
-          style={[styles.deleteAction, { alignSelf: isSent ? "flex-end" : "flex-start", marginRight: isSent ? 8 : 0, marginLeft: isSent ? 0 : 8 }]}
-          onPress={() => {
-            onDelete(message.id);
-            setShowActions(false);
-          }}
-        >
-          <Ionicons name="trash-outline" size={14} color={colors.destructive} />
-          <Text style={[styles.deleteText, { color: colors.destructive }]}>Delete</Text>
-        </Pressable>
+      {showActions && actionMsg && (
+        <Modal transparent animationType="fade" onRequestClose={() => { setShowActions(false); setActionMsg(null); }}>
+          <TouchableWithoutFeedback onPress={() => { setShowActions(false); setActionMsg(null); }}>
+            <View style={styles.modalOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={[styles.actionSheet, { backgroundColor: colors.card }]}>
+                  <View style={styles.reactionsBar}>
+                    {REACTION_EMOJIS.map((emoji) => (
+                      <Pressable key={emoji} onPress={() => handleReact(actionMsg.id, emoji)} style={styles.emojiBtn}>
+                        <Text style={styles.emojiText}>{emoji}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <View style={[styles.divider, { backgroundColor: colors.separator }]} />
+                  <Pressable style={styles.actionRow} onPress={() => { setReplyTo(actionMsg); setShowActions(false); setActionMsg(null); inputRef.current?.focus(); }}>
+                    <Ionicons name="arrow-undo-outline" size={20} color={colors.foreground} />
+                    <Text style={[styles.actionLabel, { color: colors.foreground }]}>{t("reply")}</Text>
+                  </Pressable>
+                  <Pressable style={styles.actionRow} onPress={() => { setText(actionMsg.type === "image" ? `Forwarded photo: ${actionMsg.content}` : actionMsg.content); setShowActions(false); setActionMsg(null); inputRef.current?.focus(); }}>
+                    <Ionicons name="share-outline" size={20} color={colors.foreground} />
+                    <Text style={[styles.actionLabel, { color: colors.foreground }]}>{t("forward")}</Text>
+                  </Pressable>
+                  {actionMsg.sender_id === activeUser?.id && !actionMsg.is_deleted && (
+                    <Pressable style={styles.actionRow} onPress={() => handleDelete(actionMsg.id)}>
+                      <Ionicons name="trash-outline" size={20} color={colors.destructive} />
+                      <Text style={[styles.actionLabel, { color: colors.destructive }]}>{t("delete")}</Text>
+                    </Pressable>
+                  )}
+                  <Pressable style={styles.actionRow} onPress={() => { setShowActions(false); setActionMsg(null); }}>
+                    <Ionicons name="close-outline" size={20} color={colors.mutedForeground} />
+                    <Text style={[styles.actionLabel, { color: colors.mutedForeground }]}>{t("cancel")}</Text>
+                  </Pressable>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
       )}
-    </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingBottom: 10,
-    gap: 8,
-  },
+  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingBottom: 10, gap: 6 },
   backBtn: { padding: 4 },
+  headerCenter: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
   headerInfo: { flex: 1 },
-  headerName: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  headerStatus: {
-    color: "rgba(255,255,255,0.8)",
-    fontSize: 12,
-  },
-  headerActions: { flexDirection: "row", gap: 4 },
-  headerBtn: { padding: 4 },
+  headerName: { color: "white", fontSize: 16, fontWeight: "700" },
+  headerStatus: { color: "rgba(255,255,255,0.75)", fontSize: 12 },
+  headerActions: { flexDirection: "row", gap: 2 },
+  headerBtn: { padding: 5 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  messagesList: {
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-  },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    gap: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E8ECF0",
-  },
-  inputWrap: {
-    flex: 1,
-    borderRadius: 24,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    maxHeight: 120,
-  },
-  input: { fontSize: 15, lineHeight: 20 },
-  sendBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  deleteAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: "rgba(239,68,68,0.1)",
-    marginVertical: 2,
-  },
-  deleteText: { fontSize: 12, fontWeight: "600" },
+  messagesList: { paddingVertical: 8, paddingHorizontal: 4 },
+  replyBanner: { flexDirection: "row", alignItems: "center", borderLeftWidth: 4, paddingVertical: 8, paddingLeft: 12, paddingRight: 8 },
+  replyContent: { flex: 1 },
+  replyName: { fontSize: 13, fontWeight: "700" },
+  replyText: { fontSize: 13 },
+  replyClose: { padding: 4 },
+  inputRow: { flexDirection: "row", alignItems: "flex-end", paddingHorizontal: 8, paddingTop: 8, gap: 8, borderTopWidth: StyleSheet.hairlineWidth },
+  circleBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  inputWrap: { flex: 1, borderRadius: 24, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 6, maxHeight: 120, flexDirection: "row", alignItems: "flex-end" },
+  input: { flex: 1, fontSize: 15, lineHeight: 20, paddingRight: 4 },
+  cameraBtn: { paddingBottom: 4 },
+  sendBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", elevation: 2, shadowColor: "#E11D2A", shadowOpacity: 0.3, shadowRadius: 4, shadowOffset: { width: 0, height: 2 } },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
+  actionSheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 12, paddingBottom: 32 },
+  reactionsBar: { flexDirection: "row", justifyContent: "space-around", paddingHorizontal: 20, paddingVertical: 12 },
+  emojiBtn: { padding: 8, borderRadius: 30 },
+  emojiText: { fontSize: 28 },
+  divider: { height: StyleSheet.hairlineWidth, marginBottom: 4 },
+  actionRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 14 },
+  actionLabel: { fontSize: 16 },
 });

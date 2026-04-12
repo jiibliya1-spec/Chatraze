@@ -1,10 +1,4 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Session, User as SupabaseUser } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types";
@@ -15,10 +9,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   signInWithPhone: (phone: string) => Promise<{ error: string | null }>;
-  verifyOtp: (
-    phone: string,
-    token: string
-  ) => Promise<{ error: string | null }>;
+  verifyOtp: (phone: string, token: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -31,40 +22,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchUserProfile = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from("users")
-      .select("*")
-      .eq("id", userId)
-      .single();
-    if (data) setUser(data);
+  const fetchUserProfile = useCallback(async (userId: string, userData?: SupabaseUser) => {
+    try {
+      const { data } = await supabase.from("users").select("*").eq("id", userId).single();
+      if (data) {
+        setUser(data);
+      } else if (userData) {
+        // Create user profile if doesn't exist
+        // phone is NOT NULL in schema; use empty string fallback for email-only accounts
+        const newUser = {
+          id: userId,
+          phone: userData.phone ?? "",
+          display_name: userData.email?.split("@")[0] ?? userData.phone ?? null,
+          about: "Available",
+          avatar_url: null,
+          is_online: true,
+          last_seen: new Date().toISOString(),
+        };
+        const { data: created } = await supabase.from("users").insert(newUser).select().single();
+        if (created) setUser(created);
+      }
+    } catch (err) {
+      console.warn("fetchUserProfile error:", err);
+    }
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    const initAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        setSession(session);
+        setSupabaseUser(session?.user ?? null);
+        if (session?.user) await fetchUserProfile(session.user.id, session.user);
+      } catch (err) {
+        console.error("Auth initialization error:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initAuth();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       setSupabaseUser(session?.user ?? null);
       if (session?.user) {
-        fetchUserProfile(session.user.id);
+        try {
+          await fetchUserProfile(session.user.id, session.user);
+        } catch (err) {
+          console.error("Profile fetch error:", err);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        setUser(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        setSession(session);
-        setSupabaseUser(session?.user ?? null);
-        if (session?.user) {
-          await fetchUserProfile(session.user.id);
-        } else {
-          setUser(null);
-        }
-      }
-    );
-
-    return () => {
-      listener.subscription.unsubscribe();
-    };
+    return () => listener?.subscription?.unsubscribe();
   }, [fetchUserProfile]);
 
   const signInWithPhone = async (phone: string) => {
@@ -73,65 +89,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const verifyOtp = async (phone: string, token: string) => {
-    const { error, data } = await supabase.auth.verifyOtp({
-      phone,
-      token,
-      type: "sms",
-    });
-    if (!error && data.user) {
-      const { data: existingUser } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", data.user.id)
-        .single();
-      if (!existingUser) {
-        await supabase.from("users").insert({
-          id: data.user.id,
-          phone: phone,
-          display_name: null,
-          avatar_url: null,
-          is_online: true,
-          last_seen: new Date().toISOString(),
-        });
-      } else {
-        await supabase
-          .from("users")
-          .update({ is_online: true, last_seen: new Date().toISOString() })
-          .eq("id", data.user.id);
-      }
-    }
+    const { error, data } = await supabase.auth.verifyOtp({ phone, token, type: "sms" });
     return { error: error?.message ?? null };
   };
 
   const signOut = async () => {
     if (supabaseUser) {
-      await supabase
-        .from("users")
-        .update({ is_online: false, last_seen: new Date().toISOString() })
-        .eq("id", supabaseUser.id);
+      await supabase.from("users").update({ is_online: false, last_seen: new Date().toISOString() }).eq("id", supabaseUser.id);
     }
     await supabase.auth.signOut();
   };
 
   const refreshUser = async () => {
-    if (supabaseUser) {
-      await fetchUserProfile(supabaseUser.id);
-    }
+    if (supabaseUser) await fetchUserProfile(supabaseUser.id, supabaseUser);
   };
 
   return (
-    <AuthContext.Provider
-      value={{
-        session,
-        supabaseUser,
-        user,
-        loading,
-        signInWithPhone,
-        verifyOtp,
-        signOut,
-        refreshUser,
-      }}
-    >
+    <AuthContext.Provider value={{ session, supabaseUser, user, loading, signInWithPhone, verifyOtp, signOut, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

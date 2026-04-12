@@ -8,3 +8,5 @@ export function useColors(): ColorScheme {
   const scheme = isDark ? colors.dark : colors.light;
   return { ...scheme, radius: colors.radius };
 }
+
+export type Colors = ColorScheme;
