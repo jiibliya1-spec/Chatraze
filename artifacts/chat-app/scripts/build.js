@@ -67,11 +67,18 @@ function getDeploymentDomain() {
     return stripProtocol(process.env.EXPO_PUBLIC_DOMAIN);
   }
 
-  console.warn(
-    "No deployment domain found. Falling back to localhost. " +
-      "Set REPLIT_INTERNAL_APP_DOMAIN, REPLIT_DEV_DOMAIN, or EXPO_PUBLIC_DOMAIN for deployment builds.",
+  if (process.env.CI === "true") {
+    console.warn(
+      "No deployment domain found in CI. Falling back to localhost for local/validation builds. " +
+        "Set REPLIT_INTERNAL_APP_DOMAIN, REPLIT_DEV_DOMAIN, or EXPO_PUBLIC_DOMAIN for deployment builds.",
+    );
+    return "localhost";
+  }
+
+  console.error(
+    "ERROR: No deployment domain found. Set REPLIT_INTERNAL_APP_DOMAIN, REPLIT_DEV_DOMAIN, or EXPO_PUBLIC_DOMAIN",
   );
-  return "localhost";
+  process.exit(1);
 }
 
 function prepareDirectories(timestamp) {
