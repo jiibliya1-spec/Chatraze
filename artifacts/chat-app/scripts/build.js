@@ -68,7 +68,7 @@ function getDeploymentDomain() {
   }
 
   console.warn(
-    "WARN: No deployment domain found. Falling back to localhost. " +
+    "No deployment domain found. Falling back to localhost. " +
       "Set REPLIT_INTERNAL_APP_DOMAIN, REPLIT_DEV_DOMAIN, or EXPO_PUBLIC_DOMAIN for deployment builds.",
   );
   return "localhost";
