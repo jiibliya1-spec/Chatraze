@@ -128,7 +128,7 @@ export default function ChatsScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.headerBg, paddingTop: topPad }]}>
-        <Text style={styles.headerTitle}>Chatraze</Text>
+        <Text style={styles.headerTitle}>Chatrazze</Text>
         <View style={styles.headerActions}>
           <Pressable
             onPress={() => router.push("/profile")}

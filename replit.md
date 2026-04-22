@@ -16,7 +16,7 @@ pnpm workspace monorepo using TypeScript. Includes a WhatsApp-like chat app (Wha
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
 
-## Chatraze Mobile App (artifacts/chat-app)
+## Chatrazze Mobile App (artifacts/chat-app)
 
 A WhatsApp-like chat application built with:
 - **Frontend**: React Native + Expo Router

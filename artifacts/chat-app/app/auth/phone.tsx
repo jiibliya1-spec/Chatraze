@@ -46,7 +46,7 @@ export default function PhoneScreen() {
         <View style={styles.logo}>
           <Ionicons name="chatbubbles" size={48} color="white" />
         </View>
-        <Text style={styles.appName}>Chatraze</Text>
+        <Text style={styles.appName}>Chatrazze</Text>
         <Text style={styles.tagline}>Fast. Secure. Private.</Text>
       </View>
 
