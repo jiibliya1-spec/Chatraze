@@ -31,24 +31,46 @@ export default function NewChatScreen() {
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
 
   useEffect(() => {
-    const fetchUsers = async () => {
-      setLoading(true);
-      let query = supabase
-        .from("users")
-        .select("*")
-        .neq("id", user?.id ?? "");
+    let cancelled = false;
 
-      if (search) {
-        query = query.or(`display_name.ilike.%${search}%,phone.ilike.%${search}%`);
+    const fetchUsers = async () => {
+      if (!user?.id) {
+        setUsers([]);
+        setLoading(false);
+        return;
       }
 
-      const { data } = await query.limit(30);
-      setUsers((data as User[]) ?? []);
-      setLoading(false);
+      setLoading(true);
+      try {
+        let query = supabase
+          .from("users")
+          .select("*")
+          .neq("id", user.id);
+
+        if (search) {
+          query = query.or(`display_name.ilike.%${search}%,phone.ilike.%${search}%`);
+        }
+
+        const { data } = await query.limit(30);
+        if (!cancelled) {
+          setUsers((data as User[]) ?? []);
+        }
+      } catch {
+        if (!cancelled) {
+          setUsers([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
     };
 
     const timer = setTimeout(fetchUsers, 300);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [search, user?.id]);
 
   const startChat = async (otherUserId: string) => {
